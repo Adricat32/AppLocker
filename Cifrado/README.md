@@ -5,7 +5,7 @@ Aplicación de escritorio para cifrar archivos y carpetas localmente con una con
 ## Requisitos
 
 - Python 3.10 o superior
-- Windows, macOS o Linux con Tkinter
+- Windows con Tkinter
 
 ## Ejecutar
 
