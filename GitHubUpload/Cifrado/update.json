@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "release_date": "2026-09-07",
+  "size": "15 MB",
+  "summary": "Versión base publicada de App Locker.",
+  "notes": "- Cifrado de archivos y carpetas\n- Inicio de sesión\n- Consulta de contenedores\n- Arrastrar y soltar",
+  "details_url": "https://github.com/Adricat32/AppLocker/releases",
+  "installer_url": "https://github.com/Adricat32/AppLocker/releases/download/v1.0.0/AppLocker-Setup-1.0.0.exe",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}
