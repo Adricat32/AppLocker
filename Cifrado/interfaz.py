@@ -7,6 +7,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 import app
 import updater
+from translations import LANGUAGES, translate
 
 
 class AppLockerWindow(TkinterDnD.Tk):
@@ -19,7 +20,11 @@ class AppLockerWindow(TkinterDnD.Tk):
         self.selected_path: Path | None = None
         self.session: app.Session | None = None
         self.busy = False
+        self.language = app.load_language() or "en"
         self.withdraw()
+        self.deiconify()
+        if not app.load_language():
+            self._choose_initial_language()
         if self._offer_update():
             self.destroy()
             return
@@ -28,6 +33,41 @@ class AppLockerWindow(TkinterDnD.Tk):
             return
         self._build_ui()
         self.deiconify()
+
+    def _t(self, key: str, **values: object) -> str:
+        return translate(self.language, key, **values)
+
+    def _choose_initial_language(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Choose language")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=24)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Choose your language").pack(anchor="w")
+        language_combo = ttk.Combobox(frame, state="readonly", values=list(LANGUAGES.values()), width=18)
+        language_combo.current(list(LANGUAGES).index("en"))
+        language_combo.pack(pady=(12, 18))
+
+        def accept() -> None:
+            self.language = list(LANGUAGES)[language_combo.current()]
+            app.save_language(self.language)
+            dialog.destroy()
+
+        ttk.Button(frame, text="Continue", command=accept).pack(anchor="e")
+        dialog.protocol("WM_DELETE_WINDOW", accept)
+        self.wait_window(dialog)
+
+    def _change_language(self, _event=None) -> None:
+        selected = self.language_combo.current()
+        self.language = list(LANGUAGES)[selected]
+        app.save_language(self.language)
+        for child in self.winfo_children():
+            child.destroy()
+        self._build_ui()
 
     def _offer_update(self) -> bool:
         update = updater.get_available_update()
@@ -90,26 +130,35 @@ class AppLockerWindow(TkinterDnD.Tk):
         outer.pack(fill="both", expand=True)
         outer.drop_target_register(DND_FILES)
         outer.dnd_bind("<<Drop>>", self._drop_path)
-        ttk.Label(outer, text="App Locker", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text=f"Sesión: {self.session.username} | AES-256-GCM", style="Subtitle.TLabel").pack(anchor="w", pady=(4, 14))
+        ttk.Label(outer, text=self._t("title"), style="Title.TLabel").pack(anchor="w")
+        self.session_label = ttk.Label(outer, text=self._t("session", user=self.session.username), style="Subtitle.TLabel")
+        self.session_label.pack(anchor="w", pady=(4, 10))
 
+        settings = ttk.Frame(outer)
+        settings.pack(fill="x", pady=(0, 10))
+        ttk.Label(settings, text=self._t("language")).pack(side="left")
+        self.language_combo = ttk.Combobox(settings, state="readonly", width=12, values=list(LANGUAGES.values()))
+        self.language_combo.current(list(LANGUAGES).index(self.language))
+        self.language_combo.pack(side="left", padx=(6, 18))
+        self.language_combo.bind("<<ComboboxSelected>>", self._change_language)
         mode_frame = ttk.Frame(outer)
         mode_frame.pack(fill="x", pady=(0, 14))
-        ttk.Label(mode_frame, text="Modo:").pack(side="left")
+        ttk.Label(mode_frame, text=self._t("mode")).pack(side="left")
         self.mode = tk.StringVar(value="encrypt")
-        ttk.Radiobutton(mode_frame, text="Cifrar", variable=self.mode, value="encrypt", command=self._set_mode).pack(side="left", padx=(12, 8))
-        ttk.Radiobutton(mode_frame, text="Ejecutar / ver contenido", variable=self.mode, value="inspect", command=self._set_mode).pack(side="left")
+        ttk.Radiobutton(mode_frame, text=self._t("encrypt"), variable=self.mode, value="encrypt", command=self._set_mode).pack(side="left", padx=(12, 8))
+        ttk.Radiobutton(mode_frame, text=self._t("inspect_mode"), variable=self.mode, value="inspect", command=self._set_mode).pack(side="left")
+        ttk.Radiobutton(mode_frame, text=self._t("decrypt_mode"), variable=self.mode, value="decrypt", command=self._set_mode).pack(side="left", padx=(8, 0))
 
         file_row = ttk.Frame(outer)
         file_row.pack(fill="x")
-        self.file_label = ttk.Label(file_row, text="Ningún archivo o carpeta seleccionada", anchor="w")
+        self.file_label = ttk.Label(file_row, text=self._t("no_selection"), anchor="w")
         self.file_label.pack(side="left", fill="x", expand=True)
-        ttk.Button(file_row, text="Elegir archivo", command=self.choose_file).pack(side="right", padx=(6, 0))
-        ttk.Button(file_row, text="Elegir carpeta", command=self.choose_folder).pack(side="right")
+        ttk.Button(file_row, text=self._t("choose_file"), command=self.choose_file).pack(side="right", padx=(6, 0))
+        ttk.Button(file_row, text=self._t("choose_folder"), command=self.choose_folder).pack(side="right")
 
         self.drop_zone = tk.Label(
             outer,
-            text="Arrastra aquí un archivo o una carpeta",
+            text=self._t("drop"),
             height=2,
             bg="#e6eee8",
             fg="#1f4a3d",
@@ -123,29 +172,31 @@ class AppLockerWindow(TkinterDnD.Tk):
 
         password_frame = ttk.Frame(outer)
         password_frame.pack(fill="x", pady=(22, 0))
-        self.password_label = ttk.Label(password_frame, text="Contraseña del contenedor (mínimo 8 caracteres)")
+        self.password_label = ttk.Label(password_frame, text=self._t("password_min"))
         self.password_label.pack(anchor="w")
         self.password_entry = ttk.Entry(password_frame, show="*")
         self.password_entry.pack(fill="x", pady=(6, 12))
-        self.confirm_label = ttk.Label(password_frame, text="Repite la contraseña al cifrar")
+        self.confirm_label = ttk.Label(password_frame, text=self._t("confirm_password"))
         self.confirm_label.pack(anchor="w")
         self.confirm_entry = ttk.Entry(password_frame, show="*")
         self.confirm_entry.pack(fill="x", pady=(6, 0))
 
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(24, 0))
-        self.encrypt_button = ttk.Button(buttons, text="Cifrar y bloquear", style="Action.TButton", command=self.encrypt)
+        self.encrypt_button = ttk.Button(buttons, text=self._t("encrypt_button"), style="Action.TButton", command=self.encrypt)
         self.encrypt_button.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.inspect_button = ttk.Button(buttons, text="Ver contenido", style="Action.TButton", command=self.inspect)
+        self.inspect_button = ttk.Button(buttons, text=self._t("inspect_button"), style="Action.TButton", command=self.inspect)
         self.inspect_button.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.decrypt_button = ttk.Button(buttons, text=self._t("decrypt_button"), style="Action.TButton", command=self.decrypt)
+        self.decrypt_button.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         listing_frame = ttk.Frame(outer)
         listing_frame.pack(fill="both", expand=True, pady=(18, 0))
         columns = ("name", "type", "size")
         self.contents = ttk.Treeview(listing_frame, columns=columns, show="headings", height=8)
-        self.contents.heading("name", text="Nombre")
-        self.contents.heading("type", text="Tipo")
-        self.contents.heading("size", text="Tamaño")
+        self.contents.heading("name", text=self._t("name"))
+        self.contents.heading("type", text=self._t("type"))
+        self.contents.heading("size", text=self._t("size"))
         self.contents.column("name", width=460, anchor="w")
         self.contents.column("type", width=100, anchor="w")
         self.contents.column("size", width=110, anchor="e")
@@ -153,19 +204,27 @@ class AppLockerWindow(TkinterDnD.Tk):
         self.contents.configure(yscrollcommand=scrollbar.set)
         self.contents.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        initial_status = "Modo recuperación de Windows activo." if self.session.recovery_mode else "Selecciona un archivo o carpeta."
+        initial_status = self._t("windows_recovery") if self.session.recovery_mode else self._t("select_action")
         self.status = ttk.Label(outer, text=initial_status, style="Subtitle.TLabel", wraplength=540)
         self.status.pack(anchor="w", pady=(22, 0))
         self._set_mode()
 
     def _set_mode(self) -> None:
         inspecting = self.mode.get() == "inspect"
-        self.confirm_entry.configure(state="disabled" if inspecting else "normal")
-        self.confirm_label.configure(state="disabled" if inspecting else "normal")
-        self.encrypt_button.configure(state="disabled" if inspecting else "normal")
-        self.inspect_button.configure(state="normal" if inspecting else "disabled")
-        self.password_label.configure(text="Contraseña del contenedor" if inspecting else "Contraseña del contenedor (mínimo 8 caracteres)")
-        self.status.configure(text="Selecciona un contenedor .locked para verlo." if inspecting else "Selecciona un archivo o carpeta para cifrar.")
+        encrypting = self.mode.get() == "encrypt"
+        decrypting = self.mode.get() == "decrypt"
+        self.confirm_entry.configure(state="normal" if encrypting else "disabled")
+        self.confirm_label.configure(state="normal" if encrypting else "disabled")
+        self.encrypt_button.configure(state="normal")
+        self.inspect_button.configure(state="normal")
+        self.decrypt_button.configure(state="normal")
+        self.password_label.configure(text="Contraseña del contenedor" if not encrypting else "Contraseña del contenedor (mínimo 8 caracteres)")
+        if inspecting:
+            self.status.configure(text="Selecciona un contenedor .locked para verlo.")
+        elif decrypting:
+            self.status.configure(text="Selecciona un contenedor .locked para recuperarlo.")
+        else:
+            self.status.configure(text="Selecciona un archivo o carpeta para cifrar.")
 
     def choose_file(self) -> None:
         path = filedialog.askopenfilename(title="Selecciona un archivo")
@@ -186,21 +245,22 @@ class AppLockerWindow(TkinterDnD.Tk):
         if not path.exists():
             messagebox.showwarning("Ruta no válida", "La ruta arrastrada ya no existe.")
             return
-        if self.mode.get() == "inspect" and (not path.is_file() or not path.name.endswith(app.LOCKED_SUFFIX)):
-            messagebox.showwarning("Contenedor no válido", "En modo ejecutar debes arrastrar un archivo .locked.")
+        if self.mode.get() in {"inspect", "decrypt"} and (not path.is_file() or not path.name.endswith(app.LOCKED_SUFFIX)):
+            messagebox.showwarning("Contenedor no válido", "En este modo debes arrastrar un archivo .locked.")
             return
         self._select(path)
 
     def _select(self, path: Path) -> None:
         self.selected_path = path
         self.file_label.configure(text=str(path))
-        self.status.configure(text="Listo. Elige cifrar o desbloquear.")
+        self.status.configure(text="Listo. Elige una acción.")
 
     def _set_busy(self, value: bool) -> None:
         self.busy = value
         if value:
             self.encrypt_button.configure(state="disabled")
             self.inspect_button.configure(state="disabled")
+            self.decrypt_button.configure(state="disabled")
         else:
             self._set_mode()
 
@@ -222,12 +282,12 @@ class AppLockerWindow(TkinterDnD.Tk):
     def _finished(self, message: str) -> None:
         self._set_busy(False)
         self.status.configure(text=message)
-        messagebox.showinfo("App Locker", message)
+        messagebox.showinfo("App Locker", message, parent=self)
 
     def _failed(self, message: str) -> None:
         self._set_busy(False)
         self.status.configure(text="No se pudo completar la operación.")
-        messagebox.showerror("App Locker", message)
+        messagebox.showerror("App Locker", message, parent=self)
 
     def _password(self, confirmation: bool) -> str:
         password = self.password_entry.get()
@@ -250,7 +310,7 @@ class AppLockerWindow(TkinterDnD.Tk):
             messagebox.showwarning("Contraseña no válida", str(error))
             return
         source = self.selected_path
-        self._run(lambda: self._encrypt_and_remove(source, password), "Contenedor creado: {result}")
+        self._run(lambda: self._encrypt_and_remove(source, password), self._t("created"))
 
     def _encrypt_and_remove(self, source: Path, password: str) -> Path:
         try:
@@ -263,6 +323,8 @@ class AppLockerWindow(TkinterDnD.Tk):
             raise
 
     def inspect(self) -> None:
+        self.mode.set("inspect")
+        self._set_mode()
         if not self.selected_path or not self.selected_path.is_file():
             messagebox.showwarning("Falta un contenedor", "En modo ejecutar debes seleccionar un archivo .locked.")
             return
@@ -279,7 +341,7 @@ class AppLockerWindow(TkinterDnD.Tk):
                 return
             method = "password"
         source = self.selected_path
-        self._run(lambda: self._inspect(source, password, method), "Contenido consultado: {result} elemento(s)")
+        self._run(lambda: self._inspect(source, password, method), self._t("inspected"))
 
     def _inspect(self, source: Path, password: str | None, method: str) -> int:
         try:
@@ -299,6 +361,8 @@ class AppLockerWindow(TkinterDnD.Tk):
             self.contents.insert("", "end", values=(entry["name"], entry["type"], size))
 
     def decrypt(self) -> None:
+        self.mode.set("decrypt")
+        self._set_mode()
         if not self.selected_path or not self.selected_path.is_file():
             messagebox.showwarning("Falta un contenedor", "Selecciona un archivo .locked.")
             return
@@ -316,7 +380,7 @@ class AppLockerWindow(TkinterDnD.Tk):
                 return
             method = "password"
         source = self.selected_path
-        self._run(lambda: self._decrypt_and_remove(source, password, method), "Restaurado: {result}")
+        self._run(lambda: self._decrypt_and_remove(source, password, method), self._t("restored"))
 
     def _decrypt_and_remove(self, source: Path, password: str | None, method: str) -> Path:
         try:

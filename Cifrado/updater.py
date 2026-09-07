@@ -8,7 +8,7 @@ import webbrowser
 from pathlib import Path
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.3.0"
 UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/Adricat32/AppLocker/main/update.json"
 REQUEST_TIMEOUT_SECONDS = 4
 

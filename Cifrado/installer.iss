@@ -24,3 +24,12 @@ Name: "{autodesktop}\App Locker"; Filename: "{app}\AppLocker.exe"
 
 [Run]
 Filename: "{app}\AppLocker.exe"; Description: "Abrir App Locker"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+	ResultCode: Integer;
+begin
+	Exec(ExpandConstant('{cmd}'), '/C taskkill /F /T /IM AppLocker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+	Result := '';
+end;
