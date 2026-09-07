@@ -1,10 +1,11 @@
 {
-    "version":  "1.1.0",
+    "version":  "1.2.0",
     "release_date":  "2026-09-07",
     "size":  "16,5 MB",
     "summary":  "Nueva versiÃ³n de App Locker disponible.",
     "notes":  "Actualiza este texto con los cambios de la versiÃ³n.",
     "details_url":  "https://github.com/Adricat32/AppLocker/releases/tag/v1.1.0",
     "installer_url":  "https://github.com/Adricat32/AppLocker/releases/download/v1.1.0/AppLocker-Setup-1.1.0.exe",
-    "sha256":  "9af2e21c745ff71ae9f25fc1454e97ee71de831d11e4ccbe119990279f7fbe68"
+    "sha256":  "f8760c1ceccee0651423a98feb265dc88d16677992c0225da9cbdadcbacccf2a"
 }
+
