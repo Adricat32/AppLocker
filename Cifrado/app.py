@@ -15,14 +15,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidSignature, InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESCCM, AESGCM, AESGCMSIV, AESOCB3, AESSIV, ChaCha20Poly1305
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from key_randomizer import choose_method, generate_key, generate_nonce
 
-MAGIC = b"APLOCK03"
-VERSION = 3
+
+MAGIC_V3 = b"APLOCK03"
+MAGIC = b"APLOCK04"
+VERSION = 4
 SALT_SIZE = 16
 NONCE_SIZE = 12
 KEY_SIZE = 32
@@ -34,8 +37,25 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "app_locker.json"
+LANGUAGE_PATH = APP_DIR / "app_locker_preferences.json"
 AUDIT_PATH = APP_DIR / "app_locker_audit.json"
 DPAPI_ENTROPY = b"App Locker recovery v1"
+CIPHER_AES_GCM = 1
+CIPHER_CHACHA20 = 2
+CIPHER_AES_CCM = 3
+CIPHER_AES_GCM_SIV = 4
+CIPHER_AES_OCB3 = 5
+CIPHER_AES_SIV = 6
+CIPHER_AES_128_GCM = 7
+CIPHER_NAMES = {
+    CIPHER_AES_GCM: "AES-256-GCM",
+    CIPHER_CHACHA20: "ChaCha20-Poly1305",
+    CIPHER_AES_CCM: "AES-256-CCM",
+    CIPHER_AES_GCM_SIV: "AES-256-GCM-SIV",
+    CIPHER_AES_OCB3: "AES-256-OCB3",
+    CIPHER_AES_SIV: "AES-SIV-256",
+    CIPHER_AES_128_GCM: "AES-128-GCM",
+}
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -88,6 +108,20 @@ def _write_json(path: Path, data: dict | list) -> None:
     os.replace(temporary, path)
 
 
+def load_language() -> str | None:
+    try:
+        language = json.loads(LANGUAGE_PATH.read_text(encoding="utf-8")).get("language")
+    except (OSError, AttributeError, json.JSONDecodeError):
+        return None
+    return language if language in {"es", "en", "fr"} else None
+
+
+def save_language(language: str) -> None:
+    if language not in {"es", "en", "fr"}:
+        raise ValueError("Idioma no compatible.")
+    _write_json(LANGUAGE_PATH, {"language": language})
+
+
 def audit(username: str, action: str, path: Path | None, success: bool, method: str, error: str | None = None) -> None:
     try:
         entries = json.loads(AUDIT_PATH.read_text(encoding="utf-8")) if AUDIT_PATH.exists() else []
@@ -112,6 +146,38 @@ def audit(username: str, action: str, path: Path | None, success: bool, method: 
 def derive_key(password: str, salt: bytes) -> bytes:
     kdf = PBKDF2HMAC(algorithm=SHA256(), length=KEY_SIZE, salt=salt, iterations=ITERATIONS)
     return kdf.derive(password.encode("utf-8"))
+
+
+def _cipher(cipher_id: int, key: bytes):
+    if cipher_id == CIPHER_AES_GCM:
+        return AESGCM(key)
+    if cipher_id == CIPHER_AES_128_GCM:
+        return AESGCM(key[:16])
+    if cipher_id == CIPHER_CHACHA20:
+        return ChaCha20Poly1305(key)
+    if cipher_id == CIPHER_AES_CCM:
+        return AESCCM(key)
+    if cipher_id == CIPHER_AES_GCM_SIV:
+        return AESGCMSIV(key)
+    if cipher_id == CIPHER_AES_OCB3:
+        return AESOCB3(key)
+    if cipher_id == CIPHER_AES_SIV:
+        return AESSIV(key)
+    raise ValueError("El contenedor usa un método no compatible.")
+
+
+def _encrypt_data(cipher_id: int, key: bytes, nonce: bytes, data: bytes, header: bytes) -> bytes:
+    cipher = _cipher(cipher_id, key)
+    if cipher_id == CIPHER_AES_SIV:
+        return cipher.encrypt(data, [header, nonce])
+    return cipher.encrypt(nonce, data, header)
+
+
+def _decrypt_data(cipher_id: int, key: bytes, nonce: bytes, data: bytes, header: bytes) -> bytes:
+    cipher = _cipher(cipher_id, key)
+    if cipher_id == CIPHER_AES_SIV:
+        return cipher.decrypt(data, [header, nonce])
+    return cipher.decrypt(nonce, data, header)
 
 
 def create_account(username: str, password: str) -> Session:
@@ -161,18 +227,20 @@ def login_with_windows_recovery() -> Session:
     return Session(username, recovery_key, True)
 
 
-def _encrypt_payload(name: str, kind: int, payload: bytes, password: str, recovery_key: bytes, destination: Path) -> Path:
-    salt = os.urandom(SALT_SIZE)
-    file_nonce = os.urandom(NONCE_SIZE)
-    password_wrap_nonce = os.urandom(NONCE_SIZE)
-    recovery_wrap_nonce = os.urandom(NONCE_SIZE)
-    file_key = AESGCM.generate_key(bit_length=KEY_SIZE * 8)
+def _encrypt_payload(name: str, kind: int, payload: bytes, password: str, recovery_key: bytes, destination: Path, cipher_id: int) -> Path:
+    if cipher_id not in CIPHER_NAMES:
+        raise ValueError("El método seleccionado no es compatible.")
+    salt = generate_nonce(SALT_SIZE)
+    file_nonce = generate_nonce(NONCE_SIZE)
+    password_wrap_nonce = generate_nonce(NONCE_SIZE)
+    recovery_wrap_nonce = generate_nonce(NONCE_SIZE)
+    file_key = generate_key()
     name_bytes = name.encode("utf-8")
-    header = (MAGIC + bytes([VERSION, kind]) + salt + file_nonce + password_wrap_nonce + recovery_wrap_nonce
+    header = (MAGIC + bytes([VERSION, kind, cipher_id]) + salt + file_nonce + password_wrap_nonce + recovery_wrap_nonce
               + struct.pack(">I", len(name_bytes)) + name_bytes)
-    password_wrap = AESGCM(derive_key(password, salt)).encrypt(password_wrap_nonce, file_key, header)
-    recovery_wrap = AESGCM(recovery_key).encrypt(recovery_wrap_nonce, file_key, header)
-    encrypted_payload = AESGCM(file_key).encrypt(file_nonce, payload, header)
+    password_wrap = _encrypt_data(cipher_id, derive_key(password, salt), password_wrap_nonce, file_key, header)
+    recovery_wrap = _encrypt_data(cipher_id, recovery_key, recovery_wrap_nonce, file_key, header)
+    encrypted_payload = _encrypt_data(cipher_id, file_key, file_nonce, payload, header)
     temporary = destination.with_name(destination.name + ".tmp")
     try:
         temporary.write_bytes(header + password_wrap + recovery_wrap + encrypted_payload)
@@ -183,9 +251,10 @@ def _encrypt_payload(name: str, kind: int, payload: bytes, password: str, recove
     return destination
 
 
-def encrypt_path(source: Path, password: str, recovery_key: bytes) -> Path:
+def encrypt_path(source: Path, password: str, recovery_key: bytes, cipher_id: int | None = None) -> Path:
+    cipher_id = choose_method(CIPHER_NAMES) if cipher_id is None else cipher_id
     if source.is_file():
-        return _encrypt_payload(source.name, 0, source.read_bytes(), password, recovery_key, source.with_name(source.name + LOCKED_SUFFIX))
+        return _encrypt_payload(source.name, 0, source.read_bytes(), password, recovery_key, source.with_name(source.name + LOCKED_SUFFIX), cipher_id)
     if not source.is_dir():
         raise ValueError("La ruta seleccionada no existe.")
     destination = source.with_name(source.name + LOCKED_SUFFIX)
@@ -195,9 +264,14 @@ def encrypt_path(source: Path, password: str, recovery_key: bytes) -> Path:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
             for item in source.rglob("*"):
                 archive.write(item, item.relative_to(source.parent))
-        return _encrypt_payload(source.name, 1, zip_path.read_bytes(), password, recovery_key, destination)
+        return _encrypt_payload(source.name, 1, zip_path.read_bytes(), password, recovery_key, destination, cipher_id)
     finally:
         zip_path.unlink(missing_ok=True)
+
+
+def get_container_method(source: Path) -> int:
+    """Read the authenticated method identifier stored in a .locked file."""
+    return _read_container(source.read_bytes())[2]
 
 
 def _safe_extract(archive: zipfile.ZipFile, destination: Path) -> None:
@@ -209,15 +283,23 @@ def _safe_extract(archive: zipfile.ZipFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
-def decrypt_path(source: Path, password: str | None, recovery_key: bytes | None) -> Path:
-    raw = source.read_bytes()
-    minimum = len(MAGIC) + 2 + SALT_SIZE + NONCE_SIZE * 3 + 4 + (KEY_SIZE + 16) * 2 + 16
-    if len(raw) < minimum or raw[: len(MAGIC)] != MAGIC:
+def _read_container(raw: bytes) -> tuple[int, int, int, bytes, bytes, bytes, bytes, bytes, bytes, bytes, int]:
+    if raw.startswith(MAGIC):
+        magic = MAGIC
+        current_version = VERSION
+    elif raw.startswith(MAGIC_V3):
+        magic = MAGIC_V3
+        current_version = 3
+    else:
         raise ValueError("El contenedor no pertenece a App Locker o está dañado.")
-    position = len(MAGIC)
+    position = len(magic)
     version, kind = raw[position], raw[position + 1]
     position += 2
-    if version != VERSION or kind not in (0, 1):
+    cipher_id = CIPHER_AES_GCM
+    if magic == MAGIC:
+        cipher_id = raw[position]
+        position += 1
+    if version != current_version or kind not in (0, 1) or cipher_id not in CIPHER_NAMES:
         raise ValueError("Esta versión de App Locker no reconoce el contenedor.")
     salt = raw[position:position + SALT_SIZE]
     position += SALT_SIZE
@@ -227,33 +309,49 @@ def decrypt_path(source: Path, password: str | None, recovery_key: bytes | None)
     position += NONCE_SIZE
     recovery_nonce = raw[position:position + NONCE_SIZE]
     position += NONCE_SIZE
+    if position + 4 > len(raw):
+        raise ValueError("El contenedor está dañado.")
     name_length = struct.unpack(">I", raw[position:position + 4])[0]
     position += 4
-    if not 1 <= name_length <= 4096 or position + name_length >= len(raw):
+    if not 1 <= name_length <= 4096 or position + name_length > len(raw):
         raise ValueError("El contenedor está dañado.")
     name = raw[position:position + name_length].decode("utf-8")
     position += name_length
     header = raw[:position]
-    password_wrap = raw[position:position + KEY_SIZE + 16]
-    position += KEY_SIZE + 16
-    recovery_wrap = raw[position:position + KEY_SIZE + 16]
-    position += KEY_SIZE + 16
+    wrap_size = KEY_SIZE + 16
+    if position + wrap_size * 2 > len(raw):
+        raise ValueError("El contenedor está dañado.")
+    password_wrap = raw[position:position + wrap_size]
+    position += wrap_size
+    recovery_wrap = raw[position:position + wrap_size]
+    position += wrap_size
+    if len(raw) - position < 16:
+        raise ValueError("El contenedor está dañado.")
+    return (version, kind, cipher_id, salt, file_nonce, password_nonce, recovery_nonce,
+            name.encode("utf-8"), password_wrap, recovery_wrap, position)
+
+
+def decrypt_path(source: Path, password: str | None, recovery_key: bytes | None) -> Path:
+    raw = source.read_bytes()
+    version, kind, cipher_id, salt, file_nonce, password_nonce, recovery_nonce, name_bytes, password_wrap, recovery_wrap, position = _read_container(raw)
+    name = name_bytes.decode("utf-8")
+    header = raw[:position - (KEY_SIZE + 16) * 2]
     file_key = None
     if password:
         try:
-            file_key = AESGCM(derive_key(password, salt)).decrypt(password_nonce, password_wrap, header)
-        except InvalidTag:
+            file_key = _decrypt_data(cipher_id, derive_key(password, salt), password_nonce, password_wrap, header)
+        except (InvalidSignature, InvalidTag):
             pass
     if file_key is None and recovery_key:
         try:
-            file_key = AESGCM(recovery_key).decrypt(recovery_nonce, recovery_wrap, header)
-        except InvalidTag:
+            file_key = _decrypt_data(cipher_id, recovery_key, recovery_nonce, recovery_wrap, header)
+        except (InvalidSignature, InvalidTag):
             pass
     if file_key is None:
         raise ValueError("Contraseña incorrecta o recuperación no autorizada.")
     try:
-        payload = AESGCM(file_key).decrypt(file_nonce, raw[position:], header)
-    except InvalidTag as error:
+        payload = _decrypt_data(cipher_id, file_key, file_nonce, raw[position:], header)
+    except (InvalidSignature, InvalidTag) as error:
         raise ValueError("Contraseña incorrecta o contenedor alterado.") from error
     safe_name = Path(name).name
     destination = source.with_name(safe_name + ".restored" if (source.with_name(safe_name)).exists() else safe_name)
@@ -285,49 +383,25 @@ def decrypt_path(source: Path, password: str | None, recovery_key: bytes | None)
 def inspect_path(source: Path, password: str | None, recovery_key: bytes | None) -> list[dict]:
     """Lee el contenido autenticado del contenedor sin escribirlo en disco."""
     raw = source.read_bytes()
-    minimum = len(MAGIC) + 2 + SALT_SIZE + NONCE_SIZE * 3 + 4 + (KEY_SIZE + 16) * 2 + 16
-    if len(raw) < minimum or raw[: len(MAGIC)] != MAGIC:
-        raise ValueError("El contenedor no pertenece a App Locker o está dañado.")
-    position = len(MAGIC)
-    version, kind = raw[position], raw[position + 1]
-    position += 2
-    if version != VERSION or kind not in (0, 1):
-        raise ValueError("Esta versión de App Locker no reconoce el contenedor.")
-    salt = raw[position:position + SALT_SIZE]
-    position += SALT_SIZE
-    file_nonce = raw[position:position + NONCE_SIZE]
-    position += NONCE_SIZE
-    password_nonce = raw[position:position + NONCE_SIZE]
-    position += NONCE_SIZE
-    recovery_nonce = raw[position:position + NONCE_SIZE]
-    position += NONCE_SIZE
-    name_length = struct.unpack(">I", raw[position:position + 4])[0]
-    position += 4
-    if not 1 <= name_length <= 4096 or position + name_length >= len(raw):
-        raise ValueError("El contenedor está dañado.")
-    name = raw[position:position + name_length].decode("utf-8")
-    position += name_length
-    header = raw[:position]
-    password_wrap = raw[position:position + KEY_SIZE + 16]
-    position += KEY_SIZE + 16
-    recovery_wrap = raw[position:position + KEY_SIZE + 16]
-    position += KEY_SIZE + 16
+    _, kind, cipher_id, salt, file_nonce, password_nonce, recovery_nonce, name_bytes, password_wrap, recovery_wrap, position = _read_container(raw)
+    name = name_bytes.decode("utf-8")
+    header = raw[:position - (KEY_SIZE + 16) * 2]
     file_key = None
     if password:
         try:
-            file_key = AESGCM(derive_key(password, salt)).decrypt(password_nonce, password_wrap, header)
-        except InvalidTag:
+            file_key = _decrypt_data(cipher_id, derive_key(password, salt), password_nonce, password_wrap, header)
+        except (InvalidSignature, InvalidTag):
             pass
     if file_key is None and recovery_key:
         try:
-            file_key = AESGCM(recovery_key).decrypt(recovery_nonce, recovery_wrap, header)
-        except InvalidTag:
+            file_key = _decrypt_data(cipher_id, recovery_key, recovery_nonce, recovery_wrap, header)
+        except (InvalidSignature, InvalidTag):
             pass
     if file_key is None:
         raise ValueError("Contraseña incorrecta o recuperación no autorizada.")
     try:
-        payload = AESGCM(file_key).decrypt(file_nonce, raw[position:], header)
-    except InvalidTag as error:
+        payload = _decrypt_data(cipher_id, file_key, file_nonce, raw[position:], header)
+    except (InvalidSignature, InvalidTag) as error:
         raise ValueError("Contraseña incorrecta o contenedor alterado.") from error
     if kind == 0:
         return [{"name": name, "type": "Archivo", "size_bytes": len(payload)}]
