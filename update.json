@@ -1,0 +1,10 @@
+{
+  "version": "1.1.0",
+  "release_date": "2026-09-07",
+  "size": "15 MB",
+  "summary": "Mejoras de estabilidad y nuevas funciones.",
+  "notes": "- Añadido arrastrar y soltar\n- Mejoras en la interfaz\n- Correcciones de seguridad",
+  "details_url": "https://example.com/applocker/releases/1.1.0",
+  "installer_url": "https://example.com/applocker/downloads/AppLocker-1.1.0-Setup.exe",
+  "sha256": "PON_AQUI_EL_SHA256_DEL_INSTALADOR"
+}
